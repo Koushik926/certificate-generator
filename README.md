@@ -5,21 +5,19 @@ Production-ready backend API for bulk certificate generation with background pro
 ## Tech Stack
 
 - **FastAPI** - Async web framework with auto-generated OpenAPI docs
-- **SQLAlchemy 2.0** + **Alembic** - Async ORM with migrations
-- **Redis** + **Celery** - Background task queue with result backend
+- **SQLAlchemy 2.0** + **aiosqlite** - Async ORM (SQLite default, PostgreSQL-ready via connection string)
 - **ReportLab** - Professional PDF certificate generation
-- **Pillow** - Image compositing for certificate templates
 - **Pydantic v2** - Request/response validation
 - **pytest + httpx** - Test suite with async client
 
 ## Architecture Highlights
 
-- **Background processing** - Jobs run asynchronously; API returns immediately with job ID
+- **Background processing** - Jobs run in a thread pool; API returns immediately with job ID
 - **Per-recipient error isolation** - One failure doesn't block others; detailed per-item status
-- **Template engine** - Jinja2-based certificate template with dynamic fields
-- **Idempotent submissions** - Duplicate requests handled gracefully
-- **Pagination + filtering** - List endpoints support pagination
+- **Idempotent submissions** - Duplicate requests handled via idempotency key
+- **Pagination** - List endpoints support pagination
 - **Health checks** - `/health` endpoint for container orchestration
+- **No external broker required** - Default uses `ThreadPoolExecutor`; Celery/Redis path documented in code
 
 ## Quick Start
 
@@ -27,19 +25,13 @@ Production-ready backend API for bulk certificate generation with background pro
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Start Redis (required for Celery)
-redis-server
-
-# 3. Run migrations
-alembic upgrade head
-
-# 4. Start the API
+# 2. Run the API
 uvicorn app.main:app --reload
 
-# 5. Start Celery worker (in another terminal)
-celery -A app.tasks.celery_app worker --loglevel=info
+# 3. Open API docs
+open http://localhost:8000/docs
 
-# 6. Run tests
+# 4. Run tests
 pytest tests/ -v
 ```
 
@@ -94,28 +86,50 @@ curl "http://localhost:8000/api/v1/certificates/jobs?page=1&size=20"
 ```
 certificate-generator/
 ├── app/
-│   ├── api/v1/endpoints/     # Route handlers
-│   ├── core/                 # Config, security, middleware
-│   ├── models/               # SQLAlchemy ORM models
-│   ├── schemas/              # Pydantic request/response models
-│   ├── services/             # Business logic
-│   ├── template/             # Certificate templates (HTML/CSS)
-│   ├── tasks/                # Celery background tasks
-│   └── utils/                # Helpers (PDF gen, validation)
-├── migrations/               # Alembic migrations
-├── tests/                    # Test suite
+│   ├── api/v1/__init__.py       # API router
+│   ├── config/settings.py       # Pydantic settings (env-based)
+│   ├── core/background.py       # Background task dispatcher (ThreadPoolExecutor)
+│   ├── db/session.py            # Async SQLAlchemy engine + session factory
+│   ├── endpoints/               # REST endpoint handlers
+│   ├── models/                  # SQLAlchemy ORM models (Job, Recipient)
+│   ├── pdf/template.py          # ReportLab certificate renderer
+│   ├── schemas/                 # Pydantic request/response models
+│   ├── services/                # Business logic (job_service, pdf_service)
+│   └── utils/validation.py      # Input validation utilities
+├── tests/                       # Test suite
 ├── docker-compose.yml
 ├── Dockerfile
-└── requirements.txt
+├── requirements.txt
+└── README.md
 ```
 
 ## Design Decisions
 
-1. **Celery + Redis** for background processing - decouples API from CPU-intensive PDF generation
-2. **Per-recipient error isolation** - individual failures recorded, job continues
-3. **ZIP download** - single archive of all certificates reduces client round trips
-4. **UUID job IDs** - prevents enumeration, supports distributed systems
-5. **Async FastAPI** - handles concurrent requests efficiently
+1. **ThreadPoolExecutor for background processing** - Decouples API from CPU-intensive PDF generation. The API returns immediately with a job_id; generation runs in background threads. No Redis/Celery required for the default path (optional Celery path documented in `app/core/background.py`).
+
+2. **Per-recipient error isolation** - Each recipient is processed independently. A failure on one recipient records an error and continues with the next. The job status aggregates per-recipient results.
+
+3. **ZIP download** - Single archive of all generated certificates reduces client round trips.
+
+4. **UUID job IDs** - Prevents enumeration, supports distributed systems.
+
+5. **Async FastAPI** - Handles concurrent requests efficiently with async SQLAlchemy sessions.
+
+6. **Separable business logic** - Service functions accept `AsyncSession` explicitly, making them trivially testable by overriding the `get_db` dependency.
+
+## Testing
+
+```bash
+pytest tests/ -v
+```
+
+Covers:
+- Creating a generation job
+- Input validation
+- Certificate generation (PDF)
+- Job status/progress
+- Handling individual certificate failure
+- Retrieving generated certificates (ZIP download)
 
 ## Optional Features Added
 
@@ -123,5 +137,5 @@ certificate-generator/
 - ZIP download endpoint
 - Health check endpoint
 - Request idempotency via client-provided idempotency key
-- Rate limiting
-- Structured logging with correlation IDs
+- Pagination on job listing
+- CORS middleware configured
