@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+*.db
+generated_certs/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+*.egg-info/
